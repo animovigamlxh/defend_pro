@@ -1,17 +1,17 @@
 #!/bin/bash
 
-# 🛡️ 机场节点最终安全脚本 v5 (强制清理版)
-# Airport Node Final Security Shield v5
+# 🛡️ 机场节点最终安全脚本 v6 (白名单模式)
+# Airport Node Final Security Shield v6 - Whitelist Mode
 
-echo "✅ RUNNING SCRIPT VERSION 5 (FINAL)"
-echo "🛡️ 启动机场节点最终安全防护部署..."
-echo "策略：强制清空所有旧的出站规则，然后重建一个干净、安全的防火墙"
+echo "✅ RUNNING SCRIPT VERSION 6 (FINAL - Whitelist Mode)"
+echo "🛡️ 启动机场节点最终安全防护部署 (白名单模式)..."
+echo "策略：默认阻止所有出站连接，仅放行指定的核心流量 (DNS, HTTP/S)。"
 echo "════════════════════════════════════════════════════════════════════"
 
-# --- 配置区 (使用最稳健的单行数组定义) ---
+# --- 配置区 (白名单定义) ---
 ALLOWED_TCP_PORTS="53,80,443"
 ALLOWED_UDP_PORTS="53"
-BLOCKED_PORTS=(21 22 23 25 110 135 137 138 139 143 445 465 587 993 995 1433 2022 2222 3306 3389 5432 5900 6379 27017)
+# BLOCKED_PORTS 列表已移除，因为白名单模式不再需要它。
 
 # --- 脚本核心 ---
 
@@ -32,27 +32,30 @@ ip6tables-save > "$BACKUP_FILE_V6"
 echo "✅ 备份完成。"
 
 for fw in "${FW_COMMANDS[@]}"; do
-    FW_TYPE="IPv${fw:2:1}"
+    FW_TYPE="IPv$( if [ "$fw" = "iptables" ]; then echo "4"; else echo "6"; fi )"
     echo "⚙️  正在为 $fw ($FW_TYPE) 重建规则..."
 
     # 1. 强制清空 (Flush) OUTPUT 链中的所有旧规则
     echo "  [🧹] 正在清空 $fw 的 OUTPUT 链..."
     $fw -F OUTPUT
+    
+    # 2. 临时将默认策略设为 ACCEPT，以防在规则应用期间中断连接
+    $fw -P OUTPUT ACCEPT
 
-    # 2. 允许本地回环接口 (lo)
+    # 3. 允许本地回环接口 (lo)
     $fw -A OUTPUT -o lo -j ACCEPT
     echo "  [✅] ($FW_TYPE) 允许本地回环 (lo) 流量"
 
-    # 3. 允许已建立和相关的连接 (保护当前SSH会话)
+    # 4. 允许已建立和相关的连接 (保护当前SSH会话)
     $fw -A OUTPUT -m state --state ESTABLISHED,RELATED -j ACCEPT
     echo "  [✅] ($FW_TYPE) 允许已建立的连接"
 
-    # 4. 允许核心出站流量 (DNS, HTTP/S)
+    # 5. 允许核心出站流量 (DNS, HTTP/S)
     $fw -A OUTPUT -p tcp -m multiport --dports "$ALLOWED_TCP_PORTS" -j ACCEPT
     $fw -A OUTPUT -p udp -m multiport --dports "$ALLOWED_UDP_PORTS" -j ACCEPT
     echo "  [✅] ($FW_TYPE) 允许核心出站 TCP/UDP 端口"
 
-    # 5. 允许ICMP (Ping)
+    # 6. 允许ICMP (Ping)
     if [ "$fw" = "iptables" ]; then
         $fw -A OUTPUT -p icmp -j ACCEPT
     else
@@ -60,16 +63,10 @@ for fw in "${FW_COMMANDS[@]}"; do
     fi
     echo "  [✅] ($FW_TYPE) 允许 ICMP 流量"
     
-    # 6. 阻止所有明确定义的高危端口
-    log_prefix="ABUSE_BLOCKED_${FW_TYPE}: "
-    echo "  [🚫] ($FW_TYPE) 正在逐一阻止高危端口..."
-    for port in "${BLOCKED_PORTS[@]}"; do
-        $fw -A OUTPUT -p tcp --dport "$port" -j LOG --log-prefix "$log_prefix"
-        $fw -A OUTPUT -p tcp --dport "$port" -j DROP
-        $fw -A OUTPUT -p udp --dport "$port" -j LOG --log-prefix "$log_prefix"
-        $fw -A OUTPUT -p udp --dport "$port" -j DROP
-    done
-    echo "  [👍] ($FW_TYPE) 高危端口已全部阻止"
+    # 7. 锁定策略：将默认策略设置为 DROP (白名单模式)
+    # 这是最关键的一步，所有未被明确允许的流量都将被丢弃。
+    $fw -P OUTPUT DROP
+    echo "  [🔒] ($FW_TYPE) 默认出站策略已设置为 DROP，白名单模式激活！"
 done
 
 
@@ -85,12 +82,12 @@ else
     ip6tables-save > /etc/iptables/rules.v6 2>/dev/null
 fi
 
-echo "🎉 部署完成！您的机场节点已获得一个干净且受保护的防火墙。"
+echo "🎉 部署完成！您的机场节点已获得一个干净且高度安全的"白名单"防火墙。"
 echo "════════════════════════════════════════════════════════════════════"
-echo "📜 当前 IPv4 出站规则摘要 (应该非常干净):"
+echo "📜 当前 IPv4 出站规则摘要 (策略应为 DROP):"
 iptables -L OUTPUT -n --line-numbers
 echo ""
-echo "📜 当前 IPv6 出站规则摘要 (应该非常干净):"
+echo "📜 当前 IPv6 出站规则摘要 (策略应为 DROP):"
 ip6tables -L OUTPUT -n --line-numbers
 echo ""
-echo "✅ 这是最终的、最可靠的版本。祝您使用愉快！" 
+echo "✅ 这是最终的、最安全的版本。祝您使用愉快！" 
